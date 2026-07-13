@@ -42,7 +42,6 @@
 
         const app = initializeApp(firebaseConfig);
         
-        // App Check actualizado con tu nueva clave pública de reCAPTCHA v3
         initializeAppCheck(app, {
             provider: new ReCaptchaV3Provider('6LcPPFEtAAAAAIVtKgVFo1jtAQWRESDHHnCjMKaE'),
             isTokenAutoRefreshEnabled: true
@@ -124,8 +123,8 @@
                             if (navigator.vibrate) navigator.vibrate([400, 200, 400]);
                         }, 2000);
 
-                        off(pedidoRef);
                         update(pedidoRef, { estado: "ENTREGADO" });
+                        off(pedidoRef);
 
                         setTimeout(() => {
                             if(intervaloAlarma) clearInterval(intervaloAlarma);
@@ -145,4 +144,3 @@
     </script>
 </body>
 </html>
-
