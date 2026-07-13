@@ -2,88 +2,30 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cliente - Avisador</title>
     <link rel="stylesheet" href="diseno.css">
-    <style>
-        body { overscroll-behavior-y: contain; }
-        #pantalla-bloqueo { display:none; text-align:center; padding:40px; }
-    </style>
 </head>
 <body>
-    <div id="pantalla-bloqueo">
-        <h1 style="color:#D52B1E">⛔ Acceso Denegado</h1>
-        <p>Esta página solo se puede abrir escaneando el código QR.</p>
-        <p>No se puede recargar.</p>
-    </div>
-
-    <div class="contenedor" id="contenedor-principal" style="display:none">
+    <div class="contenedor" id="contenedor-principal">
         <h1>Retiro de Pedidos</h1>
-
+        
         <div id="pantalla-registro">
             <input type="number" id="numero-cliente-input" placeholder="Tu número de ticket" style="padding:10px; width:80%; border-radius:5px; border:1px solid #ccc;">
-            <button class="boton-accion" onclick="activarMiPedido()">🔔 Activar Alertas</button>
-            <div id="info-vibracion" style="font-size:13px; margin-top:10px; color: #666;"></div>
+            <button class="boton-accion" id="btn-activar">🔔 Activar Alertas</button>
+            <div id="info-vibracion" style="font-size:12px; margin-top:8px; color:#666;"></div>
         </div>
 
         <div id="estado-pantalla" style="font-size: 20px; margin-top:20px;">Esperando conexión...</div>
-
+        
         <button id="boton-cerrar" style="display:none; margin-top: 20px; padding: 15px 30px; background-color: #D52B1E; color: white; border: none; border-radius: 5px; font-size: 18px; cursor: pointer;">Cerrar Página</button>
-
-        <video id="video-cueca" class="video-cueca" style="display:none;" loop muted playsinline preload="auto">
+        
+        <video id="video-cueca" class="video-cueca" style="display:none;" loop playsinline preload="auto">
             <source src="video.mp4" type="video/mp4">
         </video>
     </div>
 
     <script type="module">
-        // --- 1. SISTEMA ANTI-RECARGA SOLO QR ---
-        (function sistemaAntiRecarga() {
-            const params = new URLSearchParams(window.location.search);
-            const qrParam = params.get('qr');
-            const sesionGuardada = sessionStorage.getItem('sesion_qr_activa');
-
-            // Si viene con?qr= en la URL -> es acceso valido por QR
-            if (qrParam) {
-                sessionStorage.setItem('sesion_qr_activa', qrParam);
-                sessionStorage.setItem('ya_cargado', 'true');
-                // Borramos el?qr= de la URL para que no pueda recargar con el mismo link
-                history.replaceState(null, '', window.location.pathname);
-            } else {
-                // Si NO trae qr y ya había cargado antes -> es recarga
-                if (sessionStorage.getItem('ya_cargado') === 'true' &&!sesionGuardada) {
-                    bloquear();
-                    return;
-                }
-                // Si NO trae qr y nunca ha tenido sesion -> acceso directo denegado
-                if (!sesionGuardada) {
-                    bloquear();
-                    return;
-                }
-                // Si recargó pero tenia sesion guardada, también lo bloqueamos (solo 1 uso)
-                const navigation = performance.getEntriesByType("navigation")[0];
-                if (navigation && navigation.type === 'reload') {
-                    bloquear();
-                    return;
-                }
-            }
-
-            function bloquear() {
-                document.getElementById('pantalla-bloqueo').style.display = 'block';
-                document.getElementById('contenedor-principal').style.display = 'none';
-                // Bloquear F5, Ctrl+R
-                window.addEventListener('keydown', e => {
-                    if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) e.preventDefault();
-                });
-                throw new Error("Acceso bloqueado sin QR");
-            }
-
-            document.getElementById('contenedor-principal').style.display = 'block';
-            // Prevenir pull-to-refresh en celular
-            window.addEventListener('beforeunload', e => {
-                sessionStorage.removeItem('sesion_qr_activa');
-            });
-        })();
-
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
         import { getDatabase, ref, onValue, off, update } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
@@ -107,7 +49,6 @@
 
         const db = getDatabase(app);
         const auth = getAuth(app);
-
         let audioCtx = null;
         let osc = null;
         let gainNode = null;
@@ -118,134 +59,117 @@
             try { wakeLock = await navigator.wakeLock.request('screen'); } catch (err) {}
         }
 
-        // --- 2. VERIFICAR SI VIBRA ---
-        function verificarSoporteVibracion() {
+        // 1. VERIFICAR SI VIBRA
+        function verificarVibracion() {
             const info = document.getElementById('info-vibracion');
             if (!('vibrate' in navigator)) {
-                info.innerHTML = "⚠️ Este dispositivo NO soporta vibración";
+                info.innerHTML = "⚠️ Este equipo no soporta vibración";
                 console.warn("Vibración NO soportada");
                 return false;
-            } else {
-                info.innerHTML = "✅ Vibración soportada";
-                console.log("Vibración soportada");
-                // prueba corta
-                navigator.vibrate(50);
-                return true;
             }
-        }
-
-        // --- 3. SONIDO CONSTANTE (NO BEEPS) ---
-        function iniciarAlarmaConstante() {
-            try {
-                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                if (audioCtx.state === 'suspended') audioCtx.resume();
-
-                // Detener si ya había una
-                if (osc) { try{ osc.stop(); }catch(e){} }
-
-                osc = audioCtx.createOscillator();
-                gainNode = audioCtx.createGain();
-                osc.type = 'square'; // más fuerte y constante
-                osc.frequency.setValueAtTime(987.77, audioCtx.currentTime);
-                gainNode.gain.setValueAtTime(0.4, audioCtx.currentTime);
-
-                osc.connect(gainNode);
-                gainNode.connect(audioCtx.destination);
-                osc.start();
-                console.log("Alarma constante INICIADA");
-            } catch(e) { console.error(e); }
-        }
-
-        function detenerAlarmaConstante() {
-            if (gainNode) {
-                gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
-            }
-            setTimeout(() => {
-                if (osc) { try{ osc.stop(); }catch(e){} osc = null; }
-            }, 400);
-            if (intervaloVibracion) clearInterval(intervaloVibracion);
-            navigator.vibrate(0); // detener vibración
-            console.log("Alarma DETENIDA");
-        }
-
-        function iniciarVibracionConstante() {
-            if (!verificarSoporteVibracion()) return;
-            // Vibración constante real: [vibra, pausa, vibra, pausa]
-            // La hacemos infinita con un intervalo
-            navigator.vibrate([1000, 300, 1000, 300, 1000]);
-            intervaloVibracion = setInterval(() => {
-                navigator.vibrate([1000, 300, 1000, 300, 1000]);
-            }, 3500);
-        }
-
-        // --- 4. VERIFICAR BOTON CERRAR ---
-        function verificarBotonCerrar() {
-            const btn = document.getElementById('boton-cerrar');
-            if (!btn) {
-                console.error("❌ Botón de cerrar NO existe en el DOM");
-                return false;
-            }
-            console.log("✅ Botón de cerrar verificado, existe");
-            btn.style.display = "inline-block";
-            btn.onclick = () => {
-                detenerAlarmaConstante();
-                sessionStorage.clear(); // borra la sesión para que no pueda volver a entrar
-                window.location.href = 'about:blank';
-                // Fallback si about:blank falla
-                setTimeout(() => window.close(), 300);
-            };
+            info.innerHTML = "✅ Vibración OK";
+            console.log("Vibración soportada");
             return true;
         }
 
+        // 2. SONIDO CONSTANTE
+        function iniciarSonidoConstante() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                if (osc) try{ osc.stop(); }catch(e){}
+
+                osc = audioCtx.createOscillator();
+                gainNode = audioCtx.createGain();
+                osc.type = 'square';
+                osc.frequency.value = 987.77;
+                gainNode.gain.value = 0.5;
+                osc.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                osc.start();
+            } catch(e) { console.error(e); }
+        }
+
+        function detenerSonidoConstante() {
+            if (gainNode) gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+            setTimeout(() => { if (osc) try{ osc.stop(); }catch(e){} osc = null; }, 300);
+            if (intervaloVibracion) clearInterval(intervaloVibracion);
+            navigator.vibrate(0);
+        }
+
+        function iniciarVibracionConstante() {
+            if (!verificarVibracion()) return;
+            navigator.vibrate([1000, 300, 1000]);
+            intervaloVibracion = setInterval(() => {
+                navigator.vibrate([1000, 300, 1000]);
+            }, 2500);
+        }
+
+        // 3. VERIFICAR BOTON CERRAR
+        function verificarYMostrarBotonCerrar() {
+            const btn = document.getElementById('boton-cerrar');
+            if (!btn) {
+                console.error("❌ Botón cerrar no existe");
+                return;
+            }
+            console.log("✅ Botón cerrar verificado y mostrado");
+            btn.style.display = "inline-block";
+            btn.onclick = () => {
+                detenerSonidoConstante();
+                if (wakeLock) wakeLock.release().catch(()=>{});
+                window.location.href = 'about:blank';
+            };
+        }
+
         signInAnonymously(auth).then(() => {
-            verificarSoporteVibracion();
+            verificarVibracion();
             document.getElementById("estado-pantalla").innerText = "Escribe tu número para comenzar...";
+            
+            document.getElementById('btn-activar').onclick = () => activarMiPedido();
 
             window.activarMiPedido = () => {
                 const inputVal = document.getElementById("numero-cliente-input").value;
                 if(!inputVal) return alert("Por favor ingresa un número");
-
+                
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 solicitarWakeLock();
-
+                
                 document.getElementById("pantalla-registro").style.display = "none";
                 document.getElementById("estado-pantalla").innerText = "Esperando pedido #" + inputVal;
-
+                
                 const pedidoRef = ref(db, 'don_roybert/pedidos/' + inputVal);
-
+                
                 onValue(pedidoRef, (snapshot) => {
                     const data = snapshot.val();
                     if (data && data.estado === "ENTREGADO") {
                         document.getElementById("estado-pantalla").innerHTML = "<h3 style='color: #D52B1E;'>❌ Ticket ya utilizado.</h3>";
                         off(pedidoRef);
-                        verificarBotonCerrar();
+                        verificarYMostrarBotonCerrar();
                         return;
                     }
-
+                    
                     if (data && data.estado === "LISTO") {
                         document.getElementById("estado-pantalla").innerHTML = "<h2>¡PEDIDO #" + inputVal + " LISTO!</h2><p>Pasa a retirar.</p>";
-
+                        
                         const video = document.getElementById("video-cueca");
                         video.style.display = "block";
-                        video.muted = false; // intenta con sonido
                         video.load();
-                        video.play().catch(e => console.log("Video autoplay bloqueado", e));
-
-                        // INICIAR ALARMA CONSTANTE + VIBRACION CONSTANTE
-                        iniciarAlarmaConstante();
+                        video.play().catch(e => console.log(e));
+                        
+                        iniciarSonidoConstante();
                         iniciarVibracionConstante();
 
                         update(pedidoRef, { estado: "ENTREGADO" });
                         off(pedidoRef);
 
                         setTimeout(() => {
-                            detenerAlarmaConstante();
-                            if (wakeLock!== null) wakeLock.release().then(() => wakeLock = null).catch(()=>{});
-
+                            detenerSonidoConstante();
+                            if (wakeLock !== null) wakeLock.release().then(() => wakeLock = null).catch(()=>{});
+                            
                             document.getElementById("estado-pantalla").innerHTML = "<h3>Pedido Entregado.</h3><p>Gracias por su preferencia.</p>";
                             document.getElementById("video-cueca").style.display = "none";
-
-                            verificarBotonCerrar();
+                            
+                            verificarYMostrarBotonCerrar();
                         }, 20000);
                     }
                 });
