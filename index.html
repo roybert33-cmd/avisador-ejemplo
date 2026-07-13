@@ -42,9 +42,9 @@
 
         const app = initializeApp(firebaseConfig);
         
-        // Integración limpia de App Check sin alterar tus funciones ni diseños
+        // App Check actualizado con tu nueva clave pública de reCAPTCHA v3
         initializeAppCheck(app, {
-            provider: new ReCaptchaV3Provider('6LdIQk8tAAAAALbvU1GiiIB6rcGLCD07IVGwcdMF'),
+            provider: new ReCaptchaV3Provider('6LcPPFEtAAAAAIVtKgVFo1jtAQWRESDHHnCjMKaE'),
             isTokenAutoRefreshEnabled: true
         });
 
@@ -106,10 +106,9 @@
                     if (data && data.estado === "LISTO") {
                         document.getElementById("estado-pantalla").innerHTML = "<h2>¡PEDIDO #" + inputVal + " LISTO!</h2><p>Pasa a retirar.</p>";
                         
-                        // Lógica mejorada para cargar y reproducir el video
                         const video = document.getElementById("video-cueca");
                         video.style.display = "block";
-                        video.load(); // Obliga al navegador a recargar el archivo
+                        video.load();
                         
                         let playPromise = video.play();
                         if (playPromise !== undefined) {
@@ -146,3 +145,4 @@
     </script>
 </body>
 </html>
+
