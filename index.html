@@ -13,7 +13,7 @@
         <div id="pantalla-registro">
             <input type="number" id="numero-cliente-input" placeholder="Tu número de ticket" style="padding:10px; width:80%; border-radius:5px; border:1px solid #ccc;">
             <button class="boton-accion" id="btn-activar">🔔 Activar Alertas</button>
-            <div id="info-vibracion" style="font-size:12px; margin-top:8px; color:#666;"></div>
+            <p id="log-vibracion" style="font-size:11px; color:#888; margin-top:5px;"></p>
         </div>
 
         <div id="estado-pantalla" style="font-size: 20px; margin-top:20px;">Esperando conexión...</div>
@@ -60,15 +60,23 @@
         }
 
         // 1. VERIFICAR SI VIBRA
-        function verificarVibracion() {
-            const info = document.getElementById('info-vibracion');
+        function verificarSiVibra() {
+            const log = document.getElementById('log-vibracion');
             if (!('vibrate' in navigator)) {
-                info.innerHTML = "⚠️ Este equipo no soporta vibración";
-                console.warn("Vibración NO soportada");
+                log.textContent = "❌ Este celular NO soporta vibración";
+                console.log("VERIFICACIÓN VIBRACIÓN: NO SOPORTADA");
                 return false;
             }
-            info.innerHTML = "✅ Vibración OK";
-            console.log("Vibración soportada");
+            // Prueba real
+            const puedeVibrar = navigator.vibrate(10);
+            if (!puedeVibrar) {
+                log.textContent = "⚠️ Vibración bloqueada por el navegador";
+                console.log("VERIFICACIÓN VIBRACIÓN: BLOQUEADA");
+                return false;
+            }
+            log.textContent = "✅ Vibración verificada: OK";
+            console.log("VERIFICACIÓN VIBRACIÓN: OK");
+            navigator.vibrate(0); // detener prueba
             return true;
         }
 
@@ -77,16 +85,17 @@
             try {
                 if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 if (audioCtx.state === 'suspended') audioCtx.resume();
-                if (osc) try{ osc.stop(); }catch(e){}
+                if (osc) try { osc.stop(); } catch(e){}
 
                 osc = audioCtx.createOscillator();
                 gainNode = audioCtx.createGain();
-                osc.type = 'square';
+                osc.type = 'square'; // constante y fuerte
                 osc.frequency.value = 987.77;
                 gainNode.gain.value = 0.5;
                 osc.connect(gainNode);
                 gainNode.connect(audioCtx.destination);
                 osc.start();
+                console.log("SONIDO CONSTANTE: INICIADO");
             } catch(e) { console.error(e); }
         }
 
@@ -95,37 +104,39 @@
             setTimeout(() => { if (osc) try{ osc.stop(); }catch(e){} osc = null; }, 300);
             if (intervaloVibracion) clearInterval(intervaloVibracion);
             navigator.vibrate(0);
+            console.log("SONIDO Y VIBRACIÓN DETENIDOS");
         }
 
-        function iniciarVibracionConstante() {
-            if (!verificarVibracion()) return;
-            navigator.vibrate([1000, 300, 1000]);
-            intervaloVibracion = setInterval(() => {
-                navigator.vibrate([1000, 300, 1000]);
-            }, 2500);
-        }
-
-        // 3. VERIFICAR BOTON CERRAR
-        function verificarYMostrarBotonCerrar() {
+        // 3. VERIFICAR BOTÓN CERRAR
+        function verificarBotonCerrar() {
             const btn = document.getElementById('boton-cerrar');
             if (!btn) {
-                console.error("❌ Botón cerrar no existe");
-                return;
+                console.error("VERIFICACIÓN BOTÓN CERRAR: ❌ NO EXISTE");
+                return false;
             }
-            console.log("✅ Botón cerrar verificado y mostrado");
-            btn.style.display = "inline-block";
-            btn.onclick = () => {
-                detenerSonidoConstante();
-                if (wakeLock) wakeLock.release().catch(()=>{});
-                window.location.href = 'about:blank';
-            };
+            console.log("VERIFICACIÓN BOTÓN CERRAR: ✅ EXISTE");
+            if (btn.style.display === 'none') {
+                console.log("Botón estaba oculto, mostrándolo...");
+                btn.style.display = 'inline-block';
+            }
+            // Verificación extra: que sea clickeable
+            if (typeof btn.onclick !== 'function' && !btn.getAttribute('onclick')) {
+                 btn.onclick = () => {
+                    detenerSonidoConstante();
+                    window.location.href = 'about:blank';
+                 };
+            }
+            console.log("VERIFICACIÓN BOTÓN CERRAR: Listo y funcional");
+            return true;
         }
 
         signInAnonymously(auth).then(() => {
-            verificarVibracion();
             document.getElementById("estado-pantalla").innerText = "Escribe tu número para comenzar...";
             
-            document.getElementById('btn-activar').onclick = () => activarMiPedido();
+            document.getElementById('btn-activar').onclick = () => {
+                verificarSiVibra(); // verifica al activar
+                activarMiPedido();
+            };
 
             window.activarMiPedido = () => {
                 const inputVal = document.getElementById("numero-cliente-input").value;
@@ -144,7 +155,7 @@
                     if (data && data.estado === "ENTREGADO") {
                         document.getElementById("estado-pantalla").innerHTML = "<h3 style='color: #D52B1E;'>❌ Ticket ya utilizado.</h3>";
                         off(pedidoRef);
-                        verificarYMostrarBotonCerrar();
+                        verificarBotonCerrar();
                         return;
                     }
                     
@@ -154,10 +165,18 @@
                         const video = document.getElementById("video-cueca");
                         video.style.display = "block";
                         video.load();
-                        video.play().catch(e => console.log(e));
-                        
+                        video.play().catch(()=>{});
+
+                        // SONIDO CONSTANTE
                         iniciarSonidoConstante();
-                        iniciarVibracionConstante();
+
+                        // VIBRACIÓN CONSTANTE VERIFICADA
+                        if (verificarSiVibra()) {
+                            navigator.vibrate([1000, 200, 1000]);
+                            intervaloVibracion = setInterval(() => {
+                                navigator.vibrate([1000, 200, 1000]);
+                            }, 2500);
+                        }
 
                         update(pedidoRef, { estado: "ENTREGADO" });
                         off(pedidoRef);
@@ -169,7 +188,13 @@
                             document.getElementById("estado-pantalla").innerHTML = "<h3>Pedido Entregado.</h3><p>Gracias por su preferencia.</p>";
                             document.getElementById("video-cueca").style.display = "none";
                             
-                            verificarYMostrarBotonCerrar();
+                            // VERIFICACIÓN FINAL DEL BOTÓN
+                            verificarBotonCerrar();
+                            document.getElementById("boton-cerrar").style.display = "inline-block";
+                            document.getElementById("boton-cerrar").onclick = () => {
+                                detenerSonidoConstante();
+                                window.location.href = 'about:blank';
+                            };
                         }, 20000);
                     }
                 });
