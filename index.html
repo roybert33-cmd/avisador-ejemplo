@@ -53,6 +53,25 @@
         let intervaloAlarma = null;
         let wakeLock = null;
 
+        // >>> NUEVA FUNCION BLOQUEO - INICIO (No toca nada existente)
+        const KEY_BLOQUEO = 'arayapp_ticket_bloqueado';
+        function verificarBloqueoInicial() {
+            const ticketGuardado = localStorage.getItem(KEY_BLOQUEO);
+            if(ticketGuardado){
+                document.getElementById("pantalla-registro").style.display = "none";
+                document.getElementById("estado-pantalla").innerHTML = "<h3 style='color: #D52B1E;'>⏳ Tu pedido #" + ticketGuardado + " ya está en curso.</h3><p>No puedes ingresar otro número hasta que cocina reinicie el sistema.</p><p style='font-size:14px; opacity:0.7;'>Si recargas la página seguirás bloqueado.</p>";
+                return ticketGuardado;
+            }
+            return null;
+        }
+        function activarBloqueoTelefono(numero){
+            localStorage.setItem(KEY_BLOQUEO, numero);
+        }
+        function liberarBloqueoTelefono(){
+            localStorage.removeItem(KEY_BLOQUEO);
+        }
+        // >>> NUEVA FUNCION BLOQUEO - FIN
+
         async function solicitarWakeLock() {
             try {
                 wakeLock = await navigator.wakeLock.request('screen');
@@ -79,14 +98,50 @@
         }
 
         signInAnonymously(auth).then(() => {
-            document.getElementById("estado-pantalla").innerText = "Escribe tu número para comenzar...";
+            // >>> NUEVA FUNCION BLOQUEO - Verificación al cargar
+            let ticketBloqueado = verificarBloqueoInicial();
+            if(!ticketBloqueado){
+                document.getElementById("estado-pantalla").innerText = "Escribe tu número para comenzar...";
+            } else {
+                // Si ya estaba bloqueado, reconectar la escucha de su pedido existente
+                document.getElementById("numero-cliente-input").value = ticketBloqueado;
+                // Auto-reactivar la escucha sin pedir que vuelva a presionar el botón
+                setTimeout(() => { if(window.activarMiPedido) window.activarMiPedido(true); }, 500);
+            }
+
+            // >>> NUEVA FUNCION BLOQUEO - Escuchar RESET de cocina para liberar
+            onValue(ref(db, 'don_roybert/contador_global'), (snap) => {
+                const val = snap.val();
+                const valor = (val && val.valor !== undefined) ? parseInt(val.valor) : 0;
+                if(valor === 0){
+                    // Cocina reinició, liberar este teléfono
+                    liberarBloqueoTelefono();
+                    // Solo recargar si estaba bloqueado
+                    if(localStorage.getItem(KEY_BLOQUEO) === null && ticketBloqueado){
+                        location.reload();
+                    }
+                }
+            });
             
-            window.activarMiPedido = () => {
+            window.activarMiPedido = (esReconexion = false) => {
                 const inputVal = document.getElementById("numero-cliente-input").value;
                 if(!inputVal) return alert("Por favor ingresa un número");
+
+                // >>> NUEVA FUNCION BLOQUEO - Impedir segundo ingreso
+                if(!esReconexion){
+                    const yaBloqueado = localStorage.getItem(KEY_BLOQUEO);
+                    if(yaBloqueado){
+                        alert("Ya tienes el pedido #" + yaBloqueado + " en curso. Debes esperar el RESET de cocina.");
+                        return;
+                    }
+                    activarBloqueoTelefono(inputVal);
+                    ticketBloqueado = inputVal;
+                }
                 
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                solicitarWakeLock();
+                if(!esReconexion){
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    solicitarWakeLock();
+                }
                 
                 document.getElementById("pantalla-registro").style.display = "none";
                 document.getElementById("estado-pantalla").innerText = "Esperando pedido #" + inputVal;
@@ -96,9 +151,10 @@
                 onValue(pedidoRef, (snapshot) => {
                     const data = snapshot.val();
                     if (data && data.estado === "ENTREGADO") {
-                        document.getElementById("estado-pantalla").innerHTML = "<h3 style='color: #D52B1E;'>❌ Ticket ya utilizado.</h3>";
+                        document.getElementById("estado-pantalla").innerHTML = "<h3 style='color: #D52B1E;'>❌ Ticket ya utilizado.</h3><p>Espera que cocina reinicie el contador para pedir de nuevo.</p>";
                         if(intervaloAlarma) clearInterval(intervaloAlarma);
                         off(pedidoRef);
+                        // >>> NUEVA FUNCION BLOQUEO - NO liberamos aquí, se mantiene bloqueado hasta reset de cocina
                         return;
                     }
                     
@@ -132,7 +188,7 @@
                             
                             document.getElementById("contenedor-principal").style.pointerEvents = "auto";
                             document.getElementById("contenedor-principal").style.opacity = "1";
-                            document.getElementById("estado-pantalla").innerHTML = "<h3>Pedido Entregado.</h3><p>Gracias por su preferencia.</p>";
+                            document.getElementById("estado-pantalla").innerHTML = "<h3>Pedido Entregado.</h3><p>Gracias por su preferencia.<br>Quedarás bloqueado hasta el próximo RESET de cocina.</p>";
                             document.getElementById("video-cueca").style.display = "none";
                             
                             document.getElementById("boton-cerrar").style.display = "inline-block";
