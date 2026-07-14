@@ -41,120 +41,152 @@
         };
 
         const app = initializeApp(firebaseConfig);
-        
-        initializeAppCheck(app, {
-            provider: new ReCaptchaV3Provider('6LcPPFEtAAAAAIVtKgVFo1jtAQWRESDHHnCjMKaE'),
-            isTokenAutoRefreshEnabled: true
-        });
-
+        initializeAppCheck(app, { provider: new ReCaptchaV3Provider('6LcPPFEtAAAAAIVtKgVFo1jtAQWRESDHHnCjMKaE'), isTokenAutoRefreshEnabled: true });
         const db = getDatabase(app);
         const auth = getAuth(app);
         let audioCtx = null;
         let intervaloAlarma = null;
         let wakeLock = null;
 
-        // >>> NUEVA FUNCION BLOQUEO - INICIO (No toca nada existente)
         const KEY_BLOQUEO = 'arayapp_ticket_bloqueado';
         function verificarBloqueoInicial() {
             const ticketGuardado = localStorage.getItem(KEY_BLOQUEO);
             if(ticketGuardado){
                 document.getElementById("pantalla-registro").style.display = "none";
-                document.getElementById("estado-pantalla").innerHTML = "<h3 style='color: #D52B1E;'>⏳ Tu pedido #" + ticketGuardado + " ya está en curso.</h3><p>No puedes ingresar otro número hasta que cocina reinicie el sistema.</p><p style='font-size:14px; opacity:0.7;'>Si recargas la página seguirás bloqueado.</p>";
+                document.getElementById("estado-pantalla").innerHTML = "<h3 style='color: #D52B1E;'>⏳ Tu pedido #" + ticketGuardado + " ya está en curso.</h3><p>No puedes ingresar otro número hasta que cocina reinicie.</p><button class='boton-accion' style='margin-top:15px;background:#000' onclick='window.activarMiPedido(true)'>🔊 Toca aquí para reactivar sonido</button>";
                 return ticketGuardado;
             }
             return null;
         }
-        function activarBloqueoTelefono(numero){
-            localStorage.setItem(KEY_BLOQUEO, numero);
-        }
-        function liberarBloqueoTelefono(){
-            localStorage.removeItem(KEY_BLOQUEO);
-        }
-        // >>> NUEVA FUNCION BLOQUEO - FIN
+        function activarBloqueoTelefono(numero){ localStorage.setItem(KEY_BLOQUEO, numero); }
+        function liberarBloqueoTelefono(){ localStorage.removeItem(KEY_BLOQUEO); }
 
-        async function solicitarWakeLock() {
+        // >>> FIX AUDIO-VIBRACION - INICIO
+        async function solicitarPermisosIniciales() {
             try {
-                wakeLock = await navigator.wakeLock.request('screen');
-            } catch (err) {
-                console.log('Wake Lock no soportado: ' + err.message);
-            }
+                // 1. Notificaciones (para que suene en segundo plano en Android)
+                if ("Notification" in window && Notification.permission === "default") {
+                    await Notification.requestPermission();
+                }
+                // 2. Wake Lock (evita que se apague la pantalla)
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    wakeLock.addEventListener('release', () => { console.log('Wake Lock liberado'); });
+                }
+            } catch (err) { console.log('Permiso no concedido:', err.message); }
+        }
+
+        function solicitarWakeLock() { solicitarPermisosIniciales(); }
+
+        function desbloquearAudioIOS() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                // Beep silencioso para desbloquear iPhone - OBLIGATORIO
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                gain.gain.setValueAtTime(0, audioCtx.currentTime); // volumen 0
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.1);
+            } catch(e) {}
+        }
+
+        function vibrarFuerte(patron) {
+            try {
+                if ("vibrate" in navigator) {
+                    navigator.vibrate(patron);
+                }
+            } catch(e) {}
         }
 
         function sonarAlarma() {
             try {
                 if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 if (audioCtx.state === 'suspended') audioCtx.resume();
+                
                 let osc = audioCtx.createOscillator();
                 let gain = audioCtx.createGain();
                 osc.type = 'sine';
                 osc.frequency.setValueAtTime(987.77, audioCtx.currentTime);
-                gain.gain.setValueAtTime(0.6, audioCtx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+                gain.gain.setValueAtTime(0.9, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.8);
                 osc.connect(gain);
                 gain.connect(audioCtx.destination);
                 osc.start();
-                osc.stop(audioCtx.currentTime + 0.5);
+                osc.stop(audioCtx.currentTime + 0.8);
+
+                // Segunda onda más grave para que se escuche más fuerte
+                let osc2 = audioCtx.createOscillator();
+                let gain2 = audioCtx.createGain();
+                osc2.frequency.setValueAtTime(493.88, audioCtx.currentTime);
+                gain2.gain.setValueAtTime(0.6, audioCtx.currentTime);
+                osc2.connect(gain2);
+                gain2.connect(audioCtx.destination);
+                osc2.start();
+                osc2.stop(audioCtx.currentTime + 0.5);
+
             } catch(e) { console.error(e); }
         }
 
+        // Si vuelve de segundo plano, reanudar audio
+        document.addEventListener('visibilitychange', async () => {
+            if (document.visibilityState === 'visible') {
+                if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
+                if ('wakeLock' in navigator && wakeLock === null) {
+                    try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e){}
+                }
+            }
+        });
+        // >>> FIX AUDIO-VIBRACION - FIN
+
         signInAnonymously(auth).then(() => {
-            // >>> NUEVA FUNCION BLOQUEO - Verificación al cargar
             let ticketBloqueado = verificarBloqueoInicial();
             if(!ticketBloqueado){
                 document.getElementById("estado-pantalla").innerText = "Escribe tu número para comenzar...";
             } else {
-                // Si ya estaba bloqueado, reconectar la escucha de su pedido existente
                 document.getElementById("numero-cliente-input").value = ticketBloqueado;
-                // Auto-reactivar la escucha sin pedir que vuelva a presionar el botón
-                setTimeout(() => { if(window.activarMiPedido) window.activarMiPedido(true); }, 500);
             }
 
-            // >>> NUEVA FUNCION BLOQUEO - Escuchar RESET de cocina para liberar
             onValue(ref(db, 'don_roybert/contador_global'), (snap) => {
                 const val = snap.val();
                 const valor = (val && val.valor !== undefined) ? parseInt(val.valor) : 0;
                 if(valor === 0){
-                    // Cocina reinició, liberar este teléfono
                     liberarBloqueoTelefono();
-                    // Solo recargar si estaba bloqueado
                     if(localStorage.getItem(KEY_BLOQUEO) === null && ticketBloqueado){
                         location.reload();
                     }
                 }
             });
             
-            window.activarMiPedido = (esReconexion = false) => {
+            window.activarMiPedido = async (esReconexion = false) => {
                 const inputVal = document.getElementById("numero-cliente-input").value;
                 if(!inputVal) return alert("Por favor ingresa un número");
 
-                // >>> NUEVA FUNCION BLOQUEO - Impedir segundo ingreso
                 if(!esReconexion){
                     const yaBloqueado = localStorage.getItem(KEY_BLOQUEO);
-                    if(yaBloqueado){
-                        alert("Ya tienes el pedido #" + yaBloqueado + " en curso. Debes esperar el RESET de cocina.");
-                        return;
-                    }
+                    if(yaBloqueado){ alert("Ya tienes el pedido #" + yaBloqueado + " en curso."); return; }
                     activarBloqueoTelefono(inputVal);
                     ticketBloqueado = inputVal;
                 }
                 
-                if(!esReconexion){
-                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                    solicitarWakeLock();
-                }
+                // >>> FIX AUDIO-VIBRACION - Todo el desbloqueo debe estar en el click
+                desbloquearAudioIOS();
+                await solicitarPermisosIniciales();
+                vibrarFuerte(200); // vibración corta de confirmación
                 
                 document.getElementById("pantalla-registro").style.display = "none";
-                document.getElementById("estado-pantalla").innerText = "Esperando pedido #" + inputVal;
+                document.getElementById("estado-pantalla").innerText = "Esperando pedido #" + inputVal + " (Sonido y vibración activos ✅)";
                 
                 const pedidoRef = ref(db, 'don_roybert/pedidos/' + inputVal);
                 
                 onValue(pedidoRef, (snapshot) => {
                     const data = snapshot.val();
                     if (data && data.estado === "ENTREGADO") {
-                        document.getElementById("estado-pantalla").innerHTML = "<h3 style='color: #D52B1E;'>❌ Ticket ya utilizado.</h3><p>Espera que cocina reinicie el contador para pedir de nuevo.</p>";
+                        document.getElementById("estado-pantalla").innerHTML = "<h3 style='color: #D52B1E;'>❌ Ticket ya utilizado.</h3><p>Espera RESET de cocina.</p>";
                         if(intervaloAlarma) clearInterval(intervaloAlarma);
                         off(pedidoRef);
-                        // >>> NUEVA FUNCION BLOQUEO - NO liberamos aquí, se mantiene bloqueado hasta reset de cocina
                         return;
                     }
                     
@@ -164,19 +196,17 @@
                         const video = document.getElementById("video-cueca");
                         video.style.display = "block";
                         video.load();
-                        
-                        let playPromise = video.play();
-                        if (playPromise !== undefined) {
-                            playPromise.catch(error => {
-                                console.log("La reproducción falló:", error);
-                            });
-                        }
-                        
+                        video.play().catch(()=>{});
+
+                        // >>> FIX AUDIO-VIBRACION - Asegurar que suene
+                        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
                         sonarAlarma();
-                        if (navigator.vibrate) navigator.vibrate([1000, 500, 1000]);
+                        vibrarFuerte([1000, 500, 1000, 500, 1000]);
+                        
                         intervaloAlarma = setInterval(() => {
+                            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
                             sonarAlarma();
-                            if (navigator.vibrate) navigator.vibrate([400, 200, 400]);
+                            vibrarFuerte([800, 300, 800]);
                         }, 2000);
 
                         update(pedidoRef, { estado: "ENTREGADO" });
@@ -185,12 +215,8 @@
                         setTimeout(() => {
                             if(intervaloAlarma) clearInterval(intervaloAlarma);
                             if (wakeLock !== null) wakeLock.release().then(() => wakeLock = null);
-                            
-                            document.getElementById("contenedor-principal").style.pointerEvents = "auto";
-                            document.getElementById("contenedor-principal").style.opacity = "1";
-                            document.getElementById("estado-pantalla").innerHTML = "<h3>Pedido Entregado.</h3><p>Gracias por su preferencia.<br>Quedarás bloqueado hasta el próximo RESET de cocina.</p>";
+                            document.getElementById("estado-pantalla").innerHTML = "<h3>Pedido Entregado.</h3><p>Gracias por su preferencia.<br>Quedarás bloqueado hasta RESET.</p>";
                             document.getElementById("video-cueca").style.display = "none";
-                            
                             document.getElementById("boton-cerrar").style.display = "inline-block";
                         }, 20000);
                     }
