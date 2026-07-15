@@ -10,15 +10,13 @@
     <div class="contenedor" id="contenedor-principal">
         <h1>Retiro de Pedidos</h1>
         <div id="pantalla-registro">
-            <!-- TEXTO ANEXADO CAPA 1 -->
-            <p style="font-size:18px; font-weight:600; margin-bottom:15px;">Te avisaremos cuando tu pedido #123 esté listo</p>
+            <!-- TEXTO DINAMICO AHORA -->
+            <p id="texto-pedido-dinamico" style="font-size:18px; font-weight:600; margin-bottom:15px;">Te avisaremos cuando tu pedido esté listo</p>
             
-            <input type="number" id="numero-cliente-input" placeholder="Tu número de ticket" style="padding:10px; width:80%; border-radius:5px; border:1px solid #ccc;">
+            <input type="number" id="numero-cliente-input" placeholder="Tu número de ticket" style="padding:10px; width:80%; border-radius:5px; border:1px solid #ccc;" oninput="actualizarNumeroTexto()">
             
-            <!-- BOTON MODIFICADO SOLO TEXTO, MISMA FUNCION -->
             <button class="boton-accion" onclick="activarMiPedido()" style="background-color:#2563eb; color:white; padding:15px 25px; border:none; border-radius:8px; font-size:18px; font-weight:bold; width:85%; margin-top:12px;">🔔 Activar alerta con sonido</button>
             
-            <!-- TEXTO LEGAL CHICO ANEXADO -->
             <p style="font-size:11px; color:#666; margin-top:12px; line-height:1.3;">Al activar aceptas nuestra <a href="https://arayapp.cl/privacidad" target="_blank" style="color:#2563eb; text-decoration:underline;">Política de Privacidad</a>. Tu alerta se borrará.</p>
         </div>
         <div id="estado-pantalla" style="font-size: 20px; margin-top:20px;">Esperando conexión...</div>
@@ -28,7 +26,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
-import { getDatabase, ref, onValue, off, update } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
+import { getDatabase, ref, onValue, off, update, set, get } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app-check.js";
 
@@ -45,9 +43,23 @@ const db = getDatabase(app); const auth = getAuth(app);
 let audioCtx = null; let intervaloAlarma = null; let intervaloVisual = null; let wakeLock = null;
 
 const KEY_BLOQUEO = 'arayapp_ticket_bloqueado';
+
+// NUEVA FUNCION PARA MOSTRAR NUMERO DINAMICO - NO TOCA TU LOGICA
+window.actualizarNumeroTexto = () => {
+    const val = document.getElementById("numero-cliente-input").value;
+    const textoEl = document.getElementById("texto-pedido-dinamico");
+    if(val) textoEl.innerText = `Te avisaremos cuando tu pedido #${val} esté listo`;
+    else textoEl.innerText = `Te avisaremos cuando tu pedido esté listo`;
+}
+
 function verificarBloqueoInicial() {
     const t = localStorage.getItem(KEY_BLOQUEO);
-    if(t){ document.getElementById("pantalla-registro").style.display="none"; document.getElementById("estado-pantalla").innerHTML="<h3>⏳ Pedido #"+t+" en curso</h3><p>Si recargas seguirás bloqueado</p><button class='boton-accion' onclick='location.reload()'>🔊 Reactivar sonido</button>"; return t; }
+    if(t){ 
+        document.getElementById("pantalla-registro").style.display="none"; 
+        document.getElementById("texto-pedido-dinamico").innerText = `Te avisaremos cuando tu pedido #${t} esté listo`;
+        document.getElementById("estado-pantalla").innerHTML="<h3>⏳ Pedido #"+t+" en curso</h3><p>Si recargas seguirás bloqueado</p><button class='boton-accion' onclick='location.reload()'>🔊 Reactivar sonido</button>"; 
+        return t; 
+    }
     return null;
 }
 
@@ -77,7 +89,6 @@ signInAnonymously(auth).then(() => {
         if(!inputVal) return alert("Ingresa número");
         if(localStorage.getItem(KEY_BLOQUEO) && localStorage.getItem(KEY_BLOQUEO)!==inputVal){ alert("Ya tienes pedido #"+localStorage.getItem(KEY_BLOQUEO)); return; }
         
-        // DESBLOQUEO OBLIGATORIO EN EL CLICK
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         await audioCtx.resume();
         let osc = audioCtx.createOscillator(); let gain = audioCtx.createGain();
@@ -91,13 +102,24 @@ signInAnonymously(auth).then(() => {
         document.getElementById("estado-pantalla").innerText="Esperando pedido #"+inputVal+" 🔊 Activo";
 
         const pedidoRef = ref(db, 'don_roybert/pedidos/' + inputVal);
+        
+        // >>> FIX ENLACE CON COCINA: CREA EL PEDIDO SI NO EXISTE
+        const snapExist = await get(pedidoRef);
+        if(!snapExist.exists()){
+            await set(pedidoRef, { estado: "ESPERA", timestamp: Date.now() });
+        } else {
+            // si ya existe pero estaba ENTREGADO, lo vuelve a ESPERA
+            if(snapExist.val().estado === "ENTREGADO"){
+                await update(pedidoRef, { estado: "ESPERA", timestamp: Date.now() });
+            }
+        }
+
         onValue(pedidoRef, (snapshot) => {
             const data = snapshot.val();
             if(data && data.estado==="LISTO"){
                 document.getElementById("estado-pantalla").innerHTML="<h2>¡PEDIDO #"+inputVal+" LISTO!</h2>";
                 document.getElementById("video-cueca").style.display="block"; document.getElementById("video-cueca").play().catch(()=>{});
                 
-                // >>> FIX SUENA UNA SOLA VEZ - AHORA SUENA 20 VECES
                 sonarUnaVezFuerte();
                 let contadorBeep = 0;
                 if(intervaloAlarma) clearInterval(intervaloAlarma);
@@ -105,13 +127,12 @@ signInAnonymously(auth).then(() => {
                     if(audioCtx.state==='suspended') audioCtx.resume();
                     sonarUnaVezFuerte();
                     contadorBeep++;
-                    // Flasheo visual para tu teléfono mañoso
                     document.body.style.background = (contadorBeep%2===0) ? "#ff0000" : "#ffffff";
                     if(contadorBeep>30){ clearInterval(intervaloAlarma); document.body.style.background=""; }
                 }, 1500);
 
                 update(pedidoRef, { estado: "ENTREGADO" });
-                off(pedidoRef); // deja de escuchar firebase pero el intervalo sigue sonando
+                off(pedidoRef);
 
                 setTimeout(()=>{
                     if(intervaloAlarma) clearInterval(intervaloAlarma);
