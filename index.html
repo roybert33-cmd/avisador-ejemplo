@@ -16,7 +16,7 @@
             <p style="font-size:11px; color:#666; margin-top:12px; line-height:1.3;">Al activar aceptas nuestra <a href="https://arayapp.cl/privacidad" target="_blank" style="color:#2563eb; text-decoration:underline;">Política de Privacidad</a>. Tu alerta se borrará.</p>
         </div>
         <div id="estado-pantalla" style="font-size: 20px; margin-top:20px;">Esperando conexión...</div>
-        <button id="boton-cerrar" style="display:none; margin-top: 20px; padding: 15px 30px; background-color: #D52B1E; color: white; border: none; border-radius: 5px; font-size: 18px;" onclick="window.location.reload()">Cerrar Página</button>
+        <button id="boton-cerrar" style="display:none; margin-top: 20px; padding: 15px 30px; background-color: #D52B1E; color: white; border: none; border-radius: 5px; font-size: 18px;" onclick="limpiarYRecargar()">Cerrar Página</button>
         <video id="video-cueca" class="video-cueca" style="display:none;" loop muted playsinline preload="auto"><source src="video.mp4" type="video/mp4"></video>
     </div>
 
@@ -36,10 +36,26 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 initializeAppCheck(app, { provider: new ReCaptchaV3Provider('6LcPPFEtAAAAAIVtKgVFo1jtAQWRESDHHnCjMKaE'), isTokenAutoRefreshEnabled: true });
 const db = getDatabase(app); const auth = getAuth(app);
-let audioCtx = null; let intervaloAlarma = null; let wakeLock = null;
+let audioCtx = null; let intervaloAlarma = null; let wakeLock = null; let pedidoRefActual = null;
 
 const KEY_BLOQUEO = 'arayapp_ticket_bloqueado';
 const KEY_FECHA = 'arayapp_fecha';
+
+// === PARCHE ANTI-HISTORIAL ===
+function limpiarURL(){
+    // Si en el futuro usas ?token=, esto lo borra del historial
+    const url = new URL(location.href);
+    if(url.searchParams.has('token')){
+        url.searchParams.delete('token');
+        history.replaceState(null, '', url.pathname + url.hash);
+    }
+}
+window.limpiarYRecargar = () => {
+    localStorage.removeItem(KEY_BLOQUEO);
+    localStorage.removeItem(KEY_FECHA);
+    limpiarURL();
+    location.href = location.pathname;
+}
 
 window.actualizarNumeroTexto = () => {
     const val = document.getElementById("numero-cliente-input").value;
@@ -48,46 +64,82 @@ window.actualizarNumeroTexto = () => {
     else textoEl.innerText = `Te avisaremos cuando tu pedido esté listo`;
 }
 
-// --- OPTIMIZACION 1: BLOQUEO POR FECHA, NO POR CONTADOR GLOBAL ---
 function verificarBloqueoInicial() {
     const ticketGuardado = localStorage.getItem(KEY_BLOQUEO);
     const fechaGuardada = localStorage.getItem(KEY_FECHA);
     const hoy = new Date().toDateString();
-
     if (!ticketGuardado) return null;
-
-    // Si cambió el día, lo desbloqueamos (tu RESET de fin de jornada)
     if (fechaGuardada !== hoy) {
         localStorage.removeItem(KEY_BLOQUEO);
         localStorage.removeItem(KEY_FECHA);
         return null;
     }
-
-    // Mismo día: sigue bloqueado
     document.getElementById("pantalla-registro").style.display="none"; 
     document.getElementById("texto-pedido-dinamico").innerText = `Te avisaremos cuando tu pedido #${ticketGuardado} esté listo`;
-    document.getElementById("estado-pantalla").innerHTML="<h3>⏳ Pedido #"+ticketGuardado+" en curso</h3><p>Si recargas seguirás bloqueado hasta mañana</p><button class='boton-accion' onclick='location.reload()'>🔊 Reactivar sonido</button>"; 
+    document.getElementById("estado-pantalla").innerHTML="<h3>⏳ Pedido #"+ticketGuardado+" en curso</h3><p style='font-size:13px'>Sonido reactivado - no cierres</p>"; 
     return ticketGuardado;
 }
 
+function sonarUnaVezFuerte(){
+    try{
+        if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if(audioCtx.state==='suspended') audioCtx.resume();
+        let o=audioCtx.createOscillator(); let g=audioCtx.createGain();
+        o.frequency.setValueAtTime(1000, audioCtx.currentTime);
+        g.gain.setValueAtTime(1, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime+0.7);
+        o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.7);
+        if("vibrate" in navigator) navigator.vibrate([800,200,800]);
+    }catch(e){}
+}
+
+function escucharPedido(ticketId){
+    if(pedidoRefActual) off(pedidoRefActual);
+    pedidoRefActual = ref(db, 'don_roybert/pedidos/' + ticketId);
+    onValue(pedidoRefActual, (snapshot) => {
+        const data = snapshot.val();
+        if(!data){
+            localStorage.removeItem(KEY_BLOQUEO);
+            localStorage.removeItem(KEY_FECHA);
+            location.reload();
+            return;
+        }
+        if(data && data.estado==="LISTO"){
+            document.getElementById("estado-pantalla").innerHTML="<h2>¡PEDIDO #"+ticketId+" LISTO!</h2>";
+            document.getElementById("video-cueca").style.display="block"; document.getElementById("video-cueca").play().catch(()=>{});
+            sonarUnaVezFuerte();
+            let contadorBeep = 0;
+            if(intervaloAlarma) clearInterval(intervaloAlarma);
+            intervaloAlarma = setInterval(()=>{
+                if(audioCtx && audioCtx.state==='suspended') audioCtx.resume();
+                sonarUnaVezFuerte();
+                contadorBeep++;
+                document.body.style.background = (contadorBeep%2===0) ? "#ff0000" : "#ffffff";
+                if(contadorBeep>30){ clearInterval(intervaloAlarma); document.body.style.background=""; }
+            }, 1500);
+            update(pedidoRefActual, { estado: "ENTREGADO" });
+            off(pedidoRefActual);
+            setTimeout(()=>{
+                if(intervaloAlarma) clearInterval(intervaloAlarma);
+                document.body.style.background="";
+                document.getElementById("estado-pantalla").innerHTML="<h3>Pedido Entregado.</h3><p>Podrás pedir de nuevo mañana</p>";
+                document.getElementById("video-cueca").style.display="none";
+                document.getElementById("boton-cerrar").style.display="inline-block";
+                if(wakeLock) try{wakeLock.release();}catch(e){}
+            }, 30000);
+        }
+    });
+}
+
 signInAnonymously(auth).then(() => {
+    limpiarURL(); // Limpia token si viene del QR viejo
     let ticketBloqueado = verificarBloqueoInicial();
-    if(!ticketBloqueado) document.getElementById("estado-pantalla").innerText="Escribe tu número...";
-
-    // --- YA NO ESCUCHAMOS contador_global AQUÍ - NOS AHORRAMOS 90GB ---
-
-    function sonarUnaVezFuerte(){
-        try{
-            if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            if(audioCtx.state==='suspended') audioCtx.resume();
-            let o=audioCtx.createOscillator(); let g=audioCtx.createGain();
-            o.frequency.setValueAtTime(1000, audioCtx.currentTime);
-            g.gain.setValueAtTime(1, audioCtx.currentTime);
-            g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime+0.7);
-            o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+0.7);
-            if("vibrate" in navigator) navigator.vibrate([800,200,800]);
-        }catch(e){}
+    if(ticketBloqueado){
+        escucharPedido(ticketBloqueado); // PARCHE: ahora si reconecta solo al volver atras
+        return;
     }
+    
+    document.getElementById("estado-pantalla").innerText="Escribe tu número...";
 
     window.activarMiPedido = async () => {
         const inputVal = document.getElementById("numero-cliente-input").value;
@@ -102,15 +154,12 @@ signInAnonymously(auth).then(() => {
         if("wakeLock" in navigator) try{ wakeLock = await navigator.wakeLock.request('screen'); }catch(e){}
         if("Notification" in window && Notification.permission==="default") Notification.requestPermission();
 
-        // Guardamos ticket + fecha de hoy
         localStorage.setItem(KEY_BLOQUEO, inputVal);
         localStorage.setItem(KEY_FECHA, new Date().toDateString());
-
         document.getElementById("pantalla-registro").style.display="none";
         document.getElementById("estado-pantalla").innerText="Esperando pedido #"+inputVal+" 🔊 Activo";
 
         const pedidoRef = ref(db, 'don_roybert/pedidos/' + inputVal);
-        
         const snapExist = await get(pedidoRef);
         if(!snapExist.exists()){
             await set(pedidoRef, { estado: "ESPERA", timestamp: Date.now() });
@@ -119,44 +168,7 @@ signInAnonymously(auth).then(() => {
                 await update(pedidoRef, { estado: "ESPERA", timestamp: Date.now() });
             }
         }
-
-        onValue(pedidoRef, (snapshot) => {
-            const data = snapshot.val();
-            // Si hicieron RESET mientras esperaba, el pedido desaparece -> lo desbloqueamos
-            if(!data){
-                localStorage.removeItem(KEY_BLOQUEO);
-                localStorage.removeItem(KEY_FECHA);
-                location.reload();
-                return;
-            }
-            if(data && data.estado==="LISTO"){
-                document.getElementById("estado-pantalla").innerHTML="<h2>¡PEDIDO #"+inputVal+" LISTO!</h2>";
-                document.getElementById("video-cueca").style.display="block"; document.getElementById("video-cueca").play().catch(()=>{});
-                
-                sonarUnaVezFuerte();
-                let contadorBeep = 0;
-                if(intervaloAlarma) clearInterval(intervaloAlarma);
-                intervaloAlarma = setInterval(()=>{
-                    if(audioCtx.state==='suspended') audioCtx.resume();
-                    sonarUnaVezFuerte();
-                    contadorBeep++;
-                    document.body.style.background = (contadorBeep%2===0) ? "#ff0000" : "#ffffff";
-                    if(contadorBeep>30){ clearInterval(intervaloAlarma); document.body.style.background=""; }
-                }, 1500);
-
-                update(pedidoRef, { estado: "ENTREGADO" });
-                off(pedidoRef);
-
-                setTimeout(()=>{
-                    if(intervaloAlarma) clearInterval(intervaloAlarma);
-                    document.body.style.background="";
-                    document.getElementById("estado-pantalla").innerHTML="<h3>Pedido Entregado. Sigue bloqueado hoy.</h3><p>Podrás pedir de nuevo mañana</p>";
-                    document.getElementById("video-cueca").style.display="none";
-                    document.getElementById("boton-cerrar").style.display="inline-block";
-                    if(wakeLock) wakeLock.release();
-                }, 30000);
-            }
-        });
+        escucharPedido(inputVal);
     };
 });
 </script>
